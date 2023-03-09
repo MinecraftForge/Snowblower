@@ -24,17 +24,21 @@ import net.minecraftforge.snowblower.util.DependencyHashCache;
 import net.minecraftforge.snowblower.util.HashFunction;
 import net.minecraftforge.snowblower.util.Tools;
 import net.minecraftforge.snowblower.util.Util;
+import org.eclipse.jgit.api.CreateBranchCommand;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ResetCommand.ResetType;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.errors.RepositoryNotFoundException;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.transport.RefSpec;
+import org.eclipse.jgit.transport.RemoteConfig;
 import org.eclipse.jgit.transport.RemoteRefUpdate;
+import org.eclipse.jgit.transport.URIish;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.java.decompiler.main.decompiler.ConsoleDecompiler;
 
 import java.io.IOException;
+import java.net.URL;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
@@ -48,7 +52,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.Spliterators;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -66,6 +69,9 @@ public class Generator implements AutoCloseable {
     private String remoteName;
     private String branchName;
     private Config.BranchSpec branch;
+    private boolean checkout;
+    private boolean push;
+    private boolean removeRemote;
 
     public Generator(Path output, Path cache, Path extraMappings, DependencyHashCache depCache) {
         this.output = output.toAbsolutePath().normalize();
@@ -74,7 +80,7 @@ public class Generator implements AutoCloseable {
         this.depCache = depCache;
     }
 
-    public Generator setup(String branchName, @Nullable String remoteName, Config cfg, BranchSpec cliBranch, boolean fresh) throws IOException, GitAPIException {
+    public Generator setup(String branchName, @Nullable URL remoteUrl, boolean checkout, boolean push, Config cfg, BranchSpec cliBranch, boolean fresh) throws IOException, GitAPIException {
         try {
             this.git = Git.open(this.output.toFile());
             // Find the current branch in case the command line didn't specify one.
@@ -95,6 +101,16 @@ public class Generator implements AutoCloseable {
                 git.branchDelete().setBranchNames(branchName).setForce(true).call(); // Delete existing branch
                 exists = false;
                 git.checkout().setOrphan(true).setName(branchName).call(); // Move to correctly named branch
+            } else if (!fresh && this.checkout && this.remoteName != null && git.getRepository().resolve(this.remoteName + "/" + branchName) != null) {
+                if (exists) {
+                    if (branchName.equals(currentBranch)) {
+                        git.checkout().setOrphan(true).setName("orphan_temp").call();    // Move to temp branch so we can delete existing one
+                        temp = true;
+                    }
+                    git.branchDelete().setBranchNames(branchName).setForce(true).call(); // Delete branch
+                }
+
+                git.checkout().setCreateBranch(true).setName(branchName).setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.SET_UPSTREAM).setStartPoint(this.remoteName + "/" + branchName).call();
             } else if (!branchName.equals(currentBranch)) {
                 git.checkout().setOrphan(!exists).setName(branchName).call(); // Move to correctly named branch
             }
@@ -111,10 +127,10 @@ public class Generator implements AutoCloseable {
             this.git = Git.init().setDirectory(this.output.toFile()).setInitialBranch(branchName).call();
         }
 
-        if (remoteName != null && git.remoteList().call().stream().noneMatch(it -> it.getName().equals(remoteName)))
-            throw new IllegalArgumentException("Unknown remote: " + remoteName);
-        this.remoteName = remoteName;
+        setupRemote(remoteUrl);
         this.branchName = branchName;
+        this.checkout = checkout;
+        this.push = push;
 
         var cfgBranch = cfg.branches() == null ? null : cfg.branches().get(branchName);
         if (cfgBranch == null) {
@@ -133,7 +149,58 @@ public class Generator implements AutoCloseable {
         return this;
     }
 
+    private void setupRemote(@Nullable URL remoteUrl) throws GitAPIException {
+        if (remoteUrl == null)
+            return;
+
+        URIish remoteFakeUri = new URIish(remoteUrl);
+        String foundRemote = null;
+
+        Set<String> remoteNames = new HashSet<>();
+
+        for (RemoteConfig remoteConfig : this.git.remoteList().call()) {
+            String currRemoteName = remoteConfig.getName();
+            remoteNames.add(currRemoteName);
+
+            if (foundRemote != null)
+                continue;
+
+            for (URIish fakeUri : remoteConfig.getURIs()) {
+                if (fakeUri.equals(remoteFakeUri)) {
+                    foundRemote = currRemoteName;
+                    break;
+                }
+            }
+        }
+
+        if (foundRemote == null) {
+            int i = 0;
+            String attemptRemoteName = "origin";
+            while (remoteNames.contains(attemptRemoteName)) {
+                i++;
+                attemptRemoteName = "origin" + i;
+            }
+
+            this.git.remoteAdd().setName(attemptRemoteName).setUri(remoteFakeUri).call();
+            this.removeRemote = true;
+        }
+
+        this.remoteName = foundRemote;
+
+        this.git.fetch();
+    }
+
     public void run() throws IOException, GitAPIException {
+        try {
+            runInternal();
+        } finally {
+            if (this.removeRemote && this.remoteName != null) {
+                this.git.remoteRemove().setRemoteName(this.remoteName).call();
+            }
+        }
+    }
+
+    private void runInternal() throws IOException, GitAPIException {
         var init = new InitTask(this.logger, this.output, git);
 
         var manifest = VersionManifestV2.query();
@@ -228,6 +295,7 @@ public class Generator implements AutoCloseable {
         toGenerate = findVersionsWithMappings(logger, toGenerate, cache, extraMappings);
 
         var libs = this.cache.resolve("libraries");
+        boolean generatedAny = !toGenerate.isEmpty();
         for (int x = 0; x < toGenerate.size(); x++) {
             var versionInfo = toGenerate.get(x);
             var versionCache = this.cache.resolve(versionInfo.id().toString());
@@ -241,30 +309,39 @@ public class Generator implements AutoCloseable {
                 attemptPush("Pushing 10 versions to remote.");
             }
         }
-        attemptPush("Pushing remaining versions to remote."); // In case there are any remaining versions to push
 
-        if (toGenerate.isEmpty())
-            this.logger.accept("No versions to process");
+        // TODO: Push commits in increments of 10 even if we generated more than 10 versions on a previous run of SnowBlower but didn't push then
+        if (!attemptPush(generatedAny ? "Pushing remaining versions to remote." : "Pushing versions to remote.")) {
+            // If the push was up-to-date or skipped, check if no versions were processed and print.
+            if (!generatedAny)
+                this.logger.accept("No versions to process");
+        }
     }
 
-    private void attemptPush(String message) throws GitAPIException {
-        if (remoteName != null) {
-            final var result = git.push()
-                    .setRemote(remoteName)
-                    .setForce(true)
-                    .setRefSpecs(new RefSpec(branchName + ":" + branchName))
-                    .call();
-            StreamSupport.stream(result.spliterator(), false)
-                    .map(res -> res.getRemoteUpdate("refs/heads/" + branchName))
-                    .filter(Objects::nonNull)
-                    .findFirst().ifPresentOrElse(remoteRefUpdate -> {
-                        this.logger.accept(switch (remoteRefUpdate.getStatus()) {
-                            case OK -> message;
-                            case UP_TO_DATE -> "Attempted to push to remote, but local branch was up-to-date.";
-                            default -> "Could not push to remote: status: " + remoteRefUpdate.getStatus() + ", message: " + remoteRefUpdate.getMessage();
-                        });
-                    }, () -> this.logger.accept("Attempted to push to remote, but failed."));
-        }
+    private boolean attemptPush(String message) throws GitAPIException {
+        if (!this.push || this.remoteName == null)
+            return false;
+
+        this.logger.accept(message);
+
+        final var result = this.git.push()
+                .setRemote(this.remoteName)
+                .setForce(true)
+                .setRefSpecs(new RefSpec(this.branchName + ":" + this.branchName))
+                .call();
+        RemoteRefUpdate remoteRefUpdate = StreamSupport.stream(result.spliterator(), false)
+                .map(res -> res.getRemoteUpdate("refs/heads/" + this.branchName))
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Attempted to push to remote, but failed. Reason unknown."));
+
+        this.logger.accept(switch (remoteRefUpdate.getStatus()) {
+            case OK -> "  Successfully pushed to remote.";
+            case UP_TO_DATE -> "  Attempted to push to remote, but local branch was up-to-date.";
+            default -> throw new IllegalStateException("Could not push to remote: status: " + remoteRefUpdate.getStatus() + ", message: " + remoteRefUpdate.getMessage());
+        });
+
+        return remoteRefUpdate.getStatus() == RemoteRefUpdate.Status.OK;
     }
 
     private static List<VersionInfo> findVersionsWithMappings(Consumer<String> logger, List<VersionInfo> versions, Path cache, Path extraMappings) throws IOException {
