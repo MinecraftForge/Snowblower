@@ -31,6 +31,7 @@ import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.errors.RepositoryNotFoundException;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.TextProgressMonitor;
+import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.RemoteConfig;
 import org.eclipse.jgit.transport.RemoteRefUpdate;
@@ -50,12 +51,15 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
@@ -303,6 +307,8 @@ public class Generator implements AutoCloseable {
         // Filter version list to only versions that have mappings
         toGenerate = findVersionsWithMappings(logger, toGenerate, cache, extraMappings);
 
+        pushRemainingCommits(); // Push old commits in increments of 10 in case we didn't push them then
+
         var libs = this.cache.resolve("libraries");
         boolean generatedAny = !toGenerate.isEmpty();
         for (int x = 0; x < toGenerate.size(); x++) {
@@ -319,7 +325,6 @@ public class Generator implements AutoCloseable {
             }
         }
 
-        // TODO: Push commits in increments of 10 even if we generated more than 10 versions on a previous run of SnowBlower but didn't push then
         if (!attemptPush(generatedAny ? "Pushing remaining versions to remote." : "Pushing versions to remote.")) {
             // If the push was up-to-date or skipped, check if no versions were processed and print.
             if (!generatedAny)
@@ -327,7 +332,33 @@ public class Generator implements AutoCloseable {
         }
     }
 
+    private void pushRemainingCommits() throws GitAPIException, IOException {
+        final List<RevCommit> ourCommits = new ArrayList<>();
+        git.log().setMaxCount(Integer.MAX_VALUE).call().forEach(ourCommits::add);
+        for (final RevCommit commit : git.log().add(git.getRepository().resolve("refs/remotes/" + remoteName + "/" + branchName))
+                .setMaxCount(Integer.MAX_VALUE).call()) {
+            final int idx = ourCommits.indexOf(commit);
+            if (idx == 0) break; // If it is the first commit, the branch is up-to-date
+            else if (idx > 0) {
+                for (final var notPushed : ourCommits.subList(0, idx).stream()
+                        .collect(Util.partitionEvery(10))
+                        .entrySet().stream()
+                        .sorted(Comparator.comparing(Map.Entry::getKey))
+                        .map(Map.Entry::getValue)
+                        .filter(Predicate.not(List::isEmpty))
+                        .toList()) {
+                    attemptPush("Pushed " + notPushed.size() + " old commits.", new RefSpec(notPushed.get(0).getId().getName() + ":refs/heads/" + this.branchName));
+                }
+                break; // We've found the common commit, break
+            }
+        }
+    }
+
     private boolean attemptPush(String message) throws GitAPIException {
+        return attemptPush(message, new RefSpec(this.branchName + ":" + this.branchName));
+    }
+
+    private boolean attemptPush(String message, RefSpec spec) throws GitAPIException {
         if (!this.push || this.remoteName == null)
             return false;
 
@@ -336,7 +367,7 @@ public class Generator implements AutoCloseable {
         final var result = this.git.push()
                 .setRemote(this.remoteName)
                 .setForce(true)
-                .setRefSpecs(new RefSpec(this.branchName + ":" + this.branchName))
+                .setRefSpecs(spec)
                 .call();
         RemoteRefUpdate remoteRefUpdate = StreamSupport.stream(result.spliterator(), false)
                 .map(res -> res.getRemoteUpdate("refs/heads/" + this.branchName))
