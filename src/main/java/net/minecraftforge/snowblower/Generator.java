@@ -187,7 +187,7 @@ public class Generator implements AutoCloseable {
 
         this.remoteName = foundRemote;
 
-        this.git.fetch();
+        this.git.fetch().setRemote(remoteName).setProgressMonitor(new TextProgressMonitor(new OutputStreamWriter(System.out))).call();
     }
 
     public void run() throws IOException, GitAPIException {
