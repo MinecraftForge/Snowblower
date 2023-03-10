@@ -83,43 +83,6 @@ public class Generator implements AutoCloseable {
     public Generator setup(String branchName, @Nullable URL remoteUrl, boolean checkout, boolean push, Config cfg, BranchSpec cliBranch, boolean fresh) throws IOException, GitAPIException {
         try {
             this.git = Git.open(this.output.toFile());
-            // Find the current branch in case the command line didn't specify one.
-            var currentBranch = git.getRepository().getBranch();
-            if (branchName == null) {
-                if (currentBranch == null)
-                    throw new IllegalStateException("Git repository has no HEAD reference");
-                branchName = currentBranch;
-            }
-
-            boolean exists = git.getRepository().resolve(branchName) != null;
-            boolean temp = false;
-            if (fresh && exists) {
-                if (branchName.equals(currentBranch)) {
-                    git.checkout().setOrphan(true).setName("orphan_temp").call();    // Move to temp branch so we can delete existing one
-                    temp = true;
-                }
-                git.branchDelete().setBranchNames(branchName).setForce(true).call(); // Delete existing branch
-                exists = false;
-                git.checkout().setOrphan(true).setName(branchName).call(); // Move to correctly named branch
-            } else if (!fresh && this.checkout && this.remoteName != null && git.getRepository().resolve(this.remoteName + "/" + branchName) != null) {
-                if (exists) {
-                    if (branchName.equals(currentBranch)) {
-                        git.checkout().setOrphan(true).setName("orphan_temp").call();    // Move to temp branch so we can delete existing one
-                        temp = true;
-                    }
-                    git.branchDelete().setBranchNames(branchName).setForce(true).call(); // Delete branch
-                }
-
-                git.checkout().setCreateBranch(true).setName(branchName).setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.SET_UPSTREAM).setStartPoint(this.remoteName + "/" + branchName).call();
-            } else if (!branchName.equals(currentBranch)) {
-                git.checkout().setOrphan(!exists).setName(branchName).call(); // Move to correctly named branch
-            }
-
-            git.reset().setMode(ResetType.HARD).call();
-            git.clean().setCleanDirectories(true).call();
-
-            if (temp)
-                git.branchDelete().setBranchNames("orphan_temp").setForce(true).call(); // Cleanup temp branch
         } catch (RepositoryNotFoundException e) { // I wish there was a better way to detect if it exists/is init
             if (branchName == null)
                 branchName = "release";
@@ -131,6 +94,45 @@ public class Generator implements AutoCloseable {
         this.branchName = branchName;
         this.checkout = checkout;
         this.push = push;
+
+        // Find the current branch in case the command line didn't specify one.
+        var currentBranch = git.getRepository().getBranch();
+        if (branchName == null) {
+            if (currentBranch == null)
+                throw new IllegalStateException("Git repository has no HEAD reference");
+            branchName = currentBranch;
+        }
+
+        boolean exists = git.getRepository().resolve(branchName) != null;
+        boolean temp = false;
+        if (fresh && exists) {
+            if (branchName.equals(currentBranch)) {
+                git.checkout().setOrphan(true).setName("orphan_temp").call();    // Move to temp branch so we can delete existing one
+                temp = true;
+            }
+            git.branchDelete().setBranchNames(branchName).setForce(true).call(); // Delete existing branch
+            exists = false;
+            git.checkout().setOrphan(true).setName(branchName).call(); // Move to correctly named branch
+        } else if (!fresh && this.checkout && this.remoteName != null && git.getRepository().resolve(this.remoteName + "/" + branchName) != null) {
+            if (exists) {
+                if (branchName.equals(currentBranch)) {
+                    git.checkout().setOrphan(true).setName("orphan_temp").call();    // Move to temp branch so we can delete existing one
+                    temp = true;
+                }
+                git.branchDelete().setBranchNames(branchName).setForce(true).call(); // Delete branch
+            }
+
+            var upstreamMode = this.removeRemote ? CreateBranchCommand.SetupUpstreamMode.NOTRACK : CreateBranchCommand.SetupUpstreamMode.SET_UPSTREAM;
+            git.checkout().setCreateBranch(true).setName(branchName).setUpstreamMode(upstreamMode).setStartPoint(this.remoteName + "/" + branchName).call();
+        } else if (!branchName.equals(currentBranch)) {
+            git.checkout().setOrphan(!exists).setName(branchName).call(); // Move to correctly named branch
+        }
+
+        git.reset().setMode(ResetType.HARD).call();
+        git.clean().setCleanDirectories(true).call();
+
+        if (temp)
+            git.branchDelete().setBranchNames("orphan_temp").setForce(true).call(); // Cleanup temp branch
 
         var cfgBranch = cfg.branches() == null ? null : cfg.branches().get(branchName);
         if (cfgBranch == null) {
@@ -175,13 +177,13 @@ public class Generator implements AutoCloseable {
 
         if (foundRemote == null) {
             int i = 0;
-            String attemptRemoteName = "origin";
-            while (remoteNames.contains(attemptRemoteName)) {
+            foundRemote = "origin";
+            while (remoteNames.contains(foundRemote)) {
                 i++;
-                attemptRemoteName = "origin" + i;
+                foundRemote = "origin" + i;
             }
 
-            this.git.remoteAdd().setName(attemptRemoteName).setUri(remoteFakeUri).call();
+            this.git.remoteAdd().setName(foundRemote).setUri(remoteFakeUri).call();
             this.removeRemote = true;
         }
 
