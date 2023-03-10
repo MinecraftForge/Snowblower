@@ -106,22 +106,14 @@ public class Generator implements AutoCloseable {
         }
 
         boolean exists = git.getRepository().resolve(branchName) != null;
-        boolean temp = false;
+        boolean deleteTemp = false;
         if (fresh && exists) {
-            if (branchName.equals(currentBranch)) {
-                git.checkout().setOrphan(true).setName("orphan_temp").call();    // Move to temp branch so we can delete existing one
-                temp = true;
-            }
-            git.branchDelete().setBranchNames(branchName).setForce(true).call(); // Delete existing branch
+            deleteTemp = deleteBranch(branchName, currentBranch);
             exists = false;
             git.checkout().setOrphan(true).setName(branchName).call(); // Move to correctly named branch
         } else if (!fresh && this.checkout && this.remoteName != null && git.getRepository().resolve(this.remoteName + "/" + branchName) != null) {
             if (exists) {
-                if (branchName.equals(currentBranch)) {
-                    git.checkout().setOrphan(true).setName("orphan_temp").call();    // Move to temp branch so we can delete existing one
-                    temp = true;
-                }
-                git.branchDelete().setBranchNames(branchName).setForce(true).call(); // Delete branch
+                deleteTemp = deleteBranch(branchName, currentBranch);
             }
 
             var upstreamMode = this.removeRemote ? CreateBranchCommand.SetupUpstreamMode.NOTRACK : CreateBranchCommand.SetupUpstreamMode.SET_UPSTREAM;
@@ -133,7 +125,7 @@ public class Generator implements AutoCloseable {
         git.reset().setMode(ResetType.HARD).call();
         git.clean().setCleanDirectories(true).call();
 
-        if (temp)
+        if (deleteTemp)
             git.branchDelete().setBranchNames("orphan_temp").setForce(true).call(); // Cleanup temp branch
 
         var cfgBranch = cfg.branches() == null ? null : cfg.branches().get(branchName);
@@ -151,6 +143,19 @@ public class Generator implements AutoCloseable {
         }
 
         return this;
+    }
+
+    private boolean deleteBranch(String branchName, String currentBranch) throws GitAPIException {
+        boolean deleteTemp = false;
+
+        if (branchName.equals(currentBranch)) {
+            git.checkout().setOrphan(true).setName("orphan_temp").call(); // Move to temp branch so we can delete existing one
+            deleteTemp = true;
+        }
+
+        git.branchDelete().setBranchNames(branchName).setForce(true).call(); // Delete existing branch
+
+        return deleteTemp;
     }
 
     private void setupRemote(@Nullable URL remoteUrl) throws GitAPIException {
