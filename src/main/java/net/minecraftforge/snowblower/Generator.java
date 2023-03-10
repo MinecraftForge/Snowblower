@@ -30,6 +30,7 @@ import org.eclipse.jgit.api.ResetCommand.ResetType;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.errors.RepositoryNotFoundException;
 import org.eclipse.jgit.lib.Constants;
+import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.TextProgressMonitor;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.transport.RefSpec;
@@ -333,10 +334,12 @@ public class Generator implements AutoCloseable {
     }
 
     private void pushRemainingCommits() throws GitAPIException, IOException {
+        final ObjectId remoteBranch = git.getRepository().resolve("refs/remotes/" + remoteName + "/" + branchName);
+        if (remoteBranch == null) return;
+
         final List<RevCommit> ourCommits = new ArrayList<>();
         git.log().setMaxCount(Integer.MAX_VALUE).call().forEach(ourCommits::add);
-        for (final RevCommit commit : git.log().add(git.getRepository().resolve("refs/remotes/" + remoteName + "/" + branchName))
-                .setMaxCount(Integer.MAX_VALUE).call()) {
+        for (final RevCommit commit : git.log().add(remoteBranch).setMaxCount(Integer.MAX_VALUE).call()) {
             final int idx = ourCommits.indexOf(commit);
             if (idx == 0) break; // If it is the first commit, the branch is up-to-date
             else if (idx > 0) {
