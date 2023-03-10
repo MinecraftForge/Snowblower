@@ -334,6 +334,7 @@ public class Generator implements AutoCloseable {
     }
 
     private void pushRemainingCommits() throws GitAPIException, IOException {
+        if (remoteName == null) return;
         final ObjectId remoteBranch = git.getRepository().resolve("refs/remotes/" + remoteName + "/" + branchName);
         if (remoteBranch == null) return;
 
