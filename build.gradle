@@ -1,3 +1,4 @@
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 import net.minecraftforge.snowblower.gradle.DependencyHashingTask
 import net.minecraftforge.snowblower.gradle.ShadowJarFixupTask
 
@@ -7,13 +8,13 @@ plugins {
     id 'eclipse'
     id 'idea'
     id 'org.cadixdev.licenser' version '0.6.1'
-    id 'com.github.johnrengelman.shadow' version '7.1.2'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
     id 'net.minecraftforge.gradleutils' version '2.+'
 }
 
 group 'net.minecraftforge'
 version = gradleutils.getTagOffsetVersion()
-println('Version: ' + version)
+println "Version: $version"
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(17)
 
@@ -54,7 +55,9 @@ tasks.register('shadowJarFixup', ShadowJarFixupTask) {
 }
 
 afterEvaluate {
-    tasks.generateMetadataFileForMavenJavaPublication.dependsOn 'shadowJarFixup'
+    tasks.named('generateMetadataFileForMavenJavaPublication').configure {
+        dependsOn 'shadowJarFixup'
+    }
 }
 
 sourceSets {
@@ -65,22 +68,24 @@ sourceSets {
     }
 }
 
-processResources {
-    dependsOn tasks.named('generateDependencyHashes')
+tasks.named('processResources', ProcessResources).configure {
+    dependsOn 'generateDependencyHashes'
     from 'gradlew'
     from 'gradlew.bat'
 }
 
-jar {
+tasks.named('eclipseClasspath', GenerateEclipseClasspath).configure {
+    dependsOn 'generateDependencyHashes'
+}
+
+tasks.named('idea').configure {
+    dependsOn 'generateDependencyHashes'
+}
+
+tasks.named('jar', Jar).configure {
     from('gradle') {
         into 'gradle'
     }
-}
-
-eclipseClasspath.dependsOn('generateDependencyHashes')
-tasks.idea.dependsOn('generateDependencyHashes')
-
-jar {
     manifest {
         attributes([
             'Main-Class': 'net.minecraftforge.snowblower.Main',
@@ -89,7 +94,7 @@ jar {
     }
 }
 
-shadowJar {
+tasks.named('shadowJar', ShadowJar).configure {
     archiveClassifier = 'all'
     configurations = [project.configurations.shade]
 
@@ -114,10 +119,8 @@ license {
 }
 
 publishing {
-    publications {
-        mavenJava(MavenPublication) {
-            from components.java
-        }
+    publications.register('mavenJava', MavenPublication) {
+        from components.java
     }
     repositories {
         maven gradleutils.getPublishingForgeMaven()
@@ -125,5 +128,5 @@ publishing {
 }
 
 changelog {
-    fromCommit "4f8480ec50cc76a562230245170172bc84777d3a"
+    fromCommit '4f8480ec50cc76a562230245170172bc84777d3a'
 }
