@@ -1,4 +1,5 @@
 import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
+import net.minecraftforge.gradleutils.PomUtils
 import net.minecraftforge.snowblower.gradle.DependencyHashingTask
 import net.minecraftforge.snowblower.gradle.ShadowJarFixupTask
 
@@ -16,11 +17,14 @@ group 'net.minecraftforge'
 version = gradleutils.getTagOffsetVersion()
 println "Version: $version"
 
-java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
 
 repositories {
     mavenCentral()
-
     maven gradleutils.forgeMaven
 }
 
@@ -109,24 +113,35 @@ tasks.named('shadowJar', ShadowJar).configure {
 }
 
 artifacts {
-    archives shadowJar
+    archives tasks.named('shadowJar', ShadowJar)
+}
+
+changelog {
+    fromCommit '4f8480ec50cc76a562230245170172bc84777d3a'
 }
 
 license {
-    header = file('HEADER')
-    ext.fullname = 'Forge Development LLC'
+    header = file('LICENSE-header.txt')
+    newLine = false
     exclude '**/*.properties'
 }
 
 publishing {
     publications.register('mavenJava', MavenPublication) {
         from components.java
+
+        pom {
+            name = 'Snowblower'
+            description = 'A utility to create a git repository of Minecraft decompiled code to make it easier to see what changed between minecraft versions.'
+            url = 'https://github.com/MinecraftForge/Snowblower'
+
+            PomUtils.setGitHubDetails(pom, 'Snowblower')
+
+            license PomUtils.Licenses.LGPLv2_1
+        }
     }
+
     repositories {
         maven gradleutils.getPublishingForgeMaven()
     }
-}
-
-changelog {
-    fromCommit '4f8480ec50cc76a562230245170172bc84777d3a'
 }
